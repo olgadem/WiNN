@@ -1,4 +1,4 @@
-# WiNN version 0.1
+# WiNN version 0.3
 
 library(hwwntest)
 library(gam)
@@ -120,7 +120,8 @@ plot.uncorr.corr <- function(orig.m,
                              seq.order,
                              plate.coord,
                              n.plates,
-                             file.name,is.wn, p, k)
+                             file.name,
+                             is.wn, p, k)
 {
   correction        <- signal - corrected.signal
   range  <- c(0, as.numeric(plate.coord[length(plate.coord)]))
@@ -131,6 +132,7 @@ plot.uncorr.corr <- function(orig.m,
   plot(seq.order,unresid.metab, type="l", xlim=range,col="black",
         xlab="Reading Sequence", ylab="Measurement",
         main=paste(orig.m,": Untransformed")) 
+  
   # Add vertical lines demarcating the plates
   draw.plates <- function(n, plate.coord, y.pos){
     start = 0
@@ -161,33 +163,38 @@ plot.uncorr.corr <- function(orig.m,
 }
 
 ########
-# WINN
+# WiNN
 ########
-winn <- function(met.dat, 
-                 stdy.id, 
+winn_dev <- function(met.dat, 
+                 stdy.id,
+                 group.var="plate", 
                  n.start.smooth = 1, 
                  n.stop.smooth = 10,
                  debug=T, 
                  runall=F, 
-                 save.res.norm.data =T, 
                  save.corrected.data = T,
-                 save.correction.summary = T,
                  save.pdfs=T){
   
-  print("Running WINN with following parameters:")
+  print("Running WiNN with following parameters:")
   print(paste("met.dat =", deparse(substitute(met.dat))))
   print(paste("stdy.id =", stdy.id))
   print(paste("n.start.smooth =", n.start.smooth))
   print(paste("n.stop.smooth =", n.stop.smooth))
   print(paste("debug =", debug))
   print(paste("runall =", runall))
-  print(paste("save.res.norm.data =", save.res.norm.data))
   print(paste("save.corrected.data =", save.corrected.data))
-  print(paste("save.correction.summary =", save.correction.summary))
   print(paste("save.pdfs =", save.pdfs))
+  print("")
+  
+  
+  # Verify input dataset
+  if(!is.matrix(met.dat) & !is.data.frame(met.dat)){
+	  print("ERROR: wrong *met.dat* object type: must be a matrix or a data frame")
+	  quit(save="no")
+  }
   
   # Create study directory if requested
-  if(save.res.norm.data | save.corrected.data | save.correction.summary | save.pdfs){
+  if(save.corrected.data | save.pdfs){
   
     here <- paste(getwd(),"/", stdy.id, sep="")
     dir.create(here)
@@ -273,10 +280,11 @@ winn <- function(met.dat,
   res.norm.met.dt <- norm.met.dt[grep("res.norm.", names(norm.met.dt), value=T)]
   str(res.norm.met.dt, list.len=5)
   
-  if(save.res.norm.data){ 
-    save(list=c("res.norm.met.dt"), file=paste(here,"/",stdy.id,"_res.norm.met.RData",sep=""))
+  if(save.corrected.data){ 
+    corrected.resid.dt <- res.norm.met.dt
+    save(list=c("corrected.resid.dt"),   file=paste(here,"/",stdy.id,"_corrected.resid.dt.RData",sep=""))
   }
-  
+
   ####################################
   # Step 3: WN test (first)
   ####################################
@@ -348,8 +356,8 @@ winn <- function(met.dat,
   # Select the metabolites that do *not* pass the WN test and must be corrected
   mets.to.correct <- names(is.wn.before.corr[!is.na(is.wn.before.corr) & is.wn.before.corr == FALSE])
   
-  print("Metabolites not passing WN to be corrected:")
-  for(i in mets.to.correct){print(i)}
+  print(paste("Number of metabolites not passing WN to be corrected:", length(mets.to.correct)))
+  for(i in mets.to.correct[1:5]){print(i)}
   
   # Perform a second PCA restricted to the metabs to be corrected
   print("Running second PCA ...")
@@ -380,15 +388,23 @@ winn <- function(met.dat,
   # If we have metabolites to correct
   if(length(mets.to.correct) > 0){
     
+    #if(save.pdfs){
+    #  file.name <- paste(pdf.dir,stdy.id,"/uncorr_corrected.pdf",sep="")
+    #}
+    
+    
+    
     # Get plate coordinates. It will be used later for plotting purposes
     plate.coord <- c()
     for(i in 1:length(plates)){
-      tmp.df <- met.dat[grep(paste("plate_",i,"_order_",sep=""),rownames(met.dat), value=T),]
-      plate.coord <- c(plate.coord, tail(sapply(rownames(tmp.df), function(x){strsplit(x,"_order_")[[1]][2]}), n=1))
+      tmp.df <- met.dat[grep(paste(group.var,"_",i,"_order_",sep=""),rownames(met.dat), value=T),]
+      plate.coord <- c(plate.coord, tail(sapply(rownames(tmp.df), function(x){
+        plate.order <- strsplit(x,"_id_")[[1]][1]; return(strsplit(plate.order,"_order_")[[1]][2])}), n=1))
     }
     
     # Get also the sequence order for later
-    seq.order <- as.numeric(sapply(rownames(met.dat), function(x){ strsplit(x,"_order_")[[1]][2]}))
+    seq.order <- as.numeric(sapply(rownames(met.dat), function(x){ 
+      plate.order <- strsplit(x,"_id_")[[1]][1]; return(strsplit(plate.order,"_order_")[[1]][2])}))
 
     # Loop through the metabolites
     for(met in mets.to.correct){
@@ -419,7 +435,7 @@ winn <- function(met.dat,
         # Loop through the plates
         for(i in plates){
           # Subset to this plate 
-          plate.dt.met <- met.dt[grep(paste("plate_",i,"_",sep=""), rownames(met.dt)),]
+          plate.dt.met <- met.dt[grep(paste(group.var,"_",i,"_",sep=""), rownames(met.dt)),]
           
           # Get the metabolite measurements in this plate
           y <- plate.dt.met
@@ -429,10 +445,10 @@ winn <- function(met.dat,
          
           ret.trend <- tryCatch({
             apply.gam.hastie(y=y, k=k)
-          },warning=function(w, z=length(plate.dt.met), k=k, i=i){
+          },warning=function(w, z=length(plate.dt.met)){
             print(paste("WARNING @ apply.gam.hastie > ", met," - smooth=", k," - plate=", i,":", w))
             return(rep(0,z))
-          },error = function(e, z=length(plate.dt.met,k=k,i=i)) {
+          },error = function(e, z=length(plate.dt.met)) {
             print(paste("ERROR @ apply.gam.hastie > ", met," - smooth=", k," - plate=", i,":", e))
             return(rep(0,z))
           })
@@ -484,7 +500,7 @@ winn <- function(met.dat,
       # Plot
       #############
       if(save.pdfs){
-        file.name <- paste(pdf.dir,"/",met,".pdf",sep="")
+        file.name <- paste(pdf.dir,"/corr.",met,".pdf",sep="")
         orig.m <- strsplit(met,"res.norm.")[[1]][2]
     
         plot.uncorr.corr(orig.m = orig.m, 
@@ -523,22 +539,67 @@ winn <- function(met.dat,
     
     is.wn.after.correction <- is.wn.after.correction[order(is.wn.after.correction$p.val.after.correction),]
     
-    # Save
+    ##############################################################
+    # Create objects to save and/or return
+    #
+    #  (1) A "strictly" corrected data frame consisting of:
+    #      - residualized values for metabs that pass 1st WN test
+    #      - residualized values for metabs that do not pass first
+    #        and second WN test (i.e. spline coorection not applied
+    #        because second WN test fails)
+    #      - residualized + spline corrected values for metabs that
+    #        do not pass the first WN test but pass the 2nd one
+    # 
+    #  (2) A "linient" corrected data frame cosisting of:
+    #      - residualized values for metabs that pass 1st WN test
+    #      - residualized + spline corrected values for metabs that 
+    #        do not pass the first WN test (REGARDLESS on whether or not
+    #        they also pass the second one)
+    #        
+    ###############################################################
+    
+    # Select the "unsuccessfully" and "successfully" spline corrected metabs
+    unsucc.corrected.mets    <- is.wn.after.correction[!is.wn.after.correction$is.wn.after.correction, "corrected.metabs"]
+    # eg: "res.norm.X317.212200_3.9300_791141"  "res.norm.X333.207600_4.3900_870091"  "res.norm.X395.243900_3.0100_607076" ...
+    succ.corrected.mets    <- is.wn.after.correction[is.wn.after.correction$is.wn.after.correction, "corrected.metabs"]
+    # eg: "res.norm.X553.271900_4.9400_937314" "res.norm.X320.226500_3.9800_804325" "res.norm.X324.259500_4.6400_906202" ...
+    
+    # Delete the unsuccesfully corrected mets "corr.res.norm.<met>" from res.norm.met.dt. Here we are not keeping the 
+    # correction because it does not pass the second WN test, so the residualized met (the "res.norm.<met>") is kept
+    corrected.strict.dt <- res.norm.met.dt[!names(res.norm.met.dt) %in% paste("corr.", unsucc.corrected.mets, sep="")]
+    
+    # Now delete the "res.norm.<met>" that were successfully corrected. Here we keep the corrections ("corr.res.norm.<met>")
+    # and remove the uncorrected "res.norm.<met>"
+    corrected.strict.dt <- corrected.strict.dt[!names(corrected.strict.dt) %in% succ.corrected.mets]
+    
+    # Now create the "lenient" version of the corrected dset 
+    corrected.mets <- is.wn.after.correction$corrected.metabs
+    
+    # Delete the "res.norm.<met>" for those mets that were spline corrected (keep the corrections -"corr.res.norm.<met>"-
+    # and get rid of the uncorrected "res.norm.<met>")
+    corrected.lenient.dt <- res.norm.met.dt[!names(res.norm.met.dt) %in% corrected.mets]
+    
+    # Finally save
     res.norm.met.with.correction.dt <- res.norm.met.dt
     
     if(save.corrected.data){
-      save(list=c("res.norm.met.with.correction.dt"), file=paste(here,"/res.norm.met.with.correction.dt.RData",sep=""))
-    }
-    
-    if(save.correction.summary){
+      save(list=c("corrected.strict.dt"),    file=paste(here,"/",stdy.id,"_corrected_strict.RData",sep=""))
+      save(list=c("corrected.lenient.dt"),   file=paste(here,"/",stdy.id,"_corrected_lenient.RData",sep=""))
       save(list=c("is.wn.after.correction"), file=paste(here,"/is.wn.after.correction.RData",sep=""))
     }
   }else{
     print("No metabolites to correct")
     is.wn.after.correction <- NA
+    corrected.strict.dt    <- NA
+    corrected.lenient.dt   <- NA 
+    
   } # closes in length(met.to.correct > 0
   
   # Return "res.norm.met.dt". If there were metabolites to correct, the dset will include"corr.res.norm."
   # corrected metabolite else only the normalized and residualized.
-  return(list(corrected.dset=res.norm.met.dt, correction.summary=is.wn.after.correction))
+  
+  return(list(corrected.strict=corrected.strict.dt, 
+              corrected.lenient=corrected.lenient.dt,
+              corrected.resid=res.norm.met.dt,
+              correction.summary=is.wn.after.correction))
 }  
